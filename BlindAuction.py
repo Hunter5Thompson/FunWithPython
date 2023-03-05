@@ -1,8 +1,8 @@
 from replit import clear
-from art import logo
+#from art import logo
 #HINT: You can call clear() to clear the output in the console.
 
-print(logo)
+#print(logo)
 # Erstelle eine leere Liste, um die Bieter-Einträge zu speichern
 bids = []
 

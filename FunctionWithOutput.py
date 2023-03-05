@@ -1,0 +1,12 @@
+
+def format_name(f_name, l_name):
+    if f_name == "" or l_name == "":
+        return "Du musst einen validen Namen eingeben!"
+    formated_f_name = f_name.title()
+    formated_l_name = l_name.title()
+
+    return f"Result: {formated_f_name} {formated_l_name}"
+
+
+
+print(format_name(input("Wie ist dein Vorname?"), input("Wie lautet dein Nachname?")))
