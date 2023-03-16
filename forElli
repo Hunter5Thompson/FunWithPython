@@ -1,0 +1,560 @@
+using System; 
+using System.Collections.Generic; 
+using System.Linq; 
+using System.Text; 
+using System.Threading.Tasks; 
+using System.IO; 
+using System.Management; 
+using System.Reflection; 
+using System.Diagnostics; 
+using System.Threading; 
+
+class Program 
+{ 
+    //General Vars 
+    static string filename = "", exepath = "", filepath = "", modus="0" /* Modus as sting for switches h/q */; 
+    static int debug=0; 
+
+    
+    //Vars for JT-Converter 
+    static string tessug=""; 
+    static int brep = 0, cpucores = 0; 
+
+    static void Main(string[] args) 
+    { 
+        //Check args for automode 
+        if (args.Length==0) 
+        { 
+            Log("error", "Please drag your PRT- / JT- / STP- / TXT- File onto Universal Converter.exe"); 
+        } 
+        else 
+        { 
+            filename = args[0]; 
+            SetEnv(); 
+        } 
+
+        //Check if Converter runs from M-Directory 
+        if ( !exepath.StartsWith("M:\\nxshare") || !exepath.StartsWith("M:\\ugsshare_nx12") || !exepath.StartsWith("M:\\pdmi_share")) 
+        { 
+            Log("warn", "You are not running Universal Converter from Network-Drive M:"); 
+            Log("warn", "Exepath="+exepath); 
+        } 
+        
+        //Extract Zip file and set new top-assembly as filename 
+        if (filename.EndsWith(".zip") || filename.EndsWith(".7z")) 
+        { 
+            filename = Extract(filename); 
+        } 
+
+        //Skip User Input in Batch mode 
+        try 
+        { 
+            modus = args[1]; 
+            brep = Convert.ToInt32(args[2]); 
+        } 
+        catch 
+        { 
+            UserInput(); 
+        } 
+
+        //Specify tessug-config 
+        SetConverterArgs(); 
+
+        //Echo Date to track performance 
+        Log("info", DateTime.UtcNow.ToString()); 
+
+
+
+        //Start Exec 
+        switch (modus) 
+        { 
+            /* 
+            Mimic and Mono using the same commands, just tessug is different 
+            */ 
+
+            //GAPL Mimic 
+            case "1": 
+
+            //GAPL Mono 
+            case "2": 
+                { 
+                    RunNX(filename, modus, cpucores); 
+                    PVTransMulti(filename+"*.txt", "-honour_structure"); 
+
+                    //if (File.Exists(Path.Combine(filepath, "header.txt"))) 
+                    //{ 
+                    //    PVTransSingle(Path.Combine(filepath, "header.txt"), "-generate_assy_jt -single_part"); 
+                    //} 
+
+
+                    PVTransSingle(filename, "-generate_assy_jt -single_part"); 
+
+                    break; 
+                } 
+
+            //Mono 
+            case "3": 
+
+             //Header-JT 
+            case "4": 
+                { 
+                    PVTransSingle(filename, "-generate_assy_jt "); //-single_part 
+                    break; 
+                } 
+
+            //Mono Visbile Only 
+            case "5": 
+
+                { 
+                    PVTransSingle(filename, "-honour_structure"); 
+                    break; 
+                } 
+
+            //Mimic Visbile Only 
+            case "6": 
+
+                { 
+                    PVTransSingle(filename, "-honour_structure"); 
+                    break; 
+                }           
+
+
+
+            //JTtoSTP 
+            case "10": 
+                { 
+                    JtStep(filename); 
+                    break; 
+                } 
+
+            //Structure-Update 
+            case "20": 
+                { 
+                    RunNX(filename, modus, cpucores); 
+                    break; 
+                } 
+
+            //Export Attributes 
+            case "21": 
+                { 
+                    RunNX(filename, modus, cpucores); 
+
+                    ProcessStartInfo psi = new ProcessStartInfo(@"excel.exe"); 
+                    psi.Arguments = filename.Replace(".prt", ".txt"); 
+                    psi.WindowStyle = ProcessWindowStyle.Maximized; 
+                    Process.Start(psi); 
+                    Environment.Exit(0); 
+                    break; 
+                } 
+
+            //Import Attributes 
+            case "22": 
+                { 
+                    RunNX(filename, modus, cpucores); 
+                    break; 
+                } 
+        } 
+
+        //Zip Files 
+        if (File.Exists(Path.Combine(Path.GetDirectoryName(filename), Path.GetFileNameWithoutExtension(filename) + "_src.zip"))) 
+        { 
+            if (modus == "1" || modus == "2" || modus == "3") 
+            { 
+                Zip(filename, "*.jt"); 
+            } 
+
+            /* Spare for JT to NX 
+            else if (modus == "") 
+            { 
+                Zip(filename, "*.prt"); 
+            } 
+            */ 
+        } 
+
+        //Finished Message 
+        if (args.Length <= 1) 
+        { 
+            Log("info", DateTime.UtcNow.ToString()+ " - Conversation finished, please press any key to exit"); 
+            Console.Read(); 
+        } 
+    } 
+
+    static void Redo(string redofile) 
+    { 
+        RunNX(redofile, modus, 1); 
+        PVTransMulti(redofile + "*.txt", "-honour_structure"); 
+        PVTransSingle(redofile, "-generate_assy_jt -single_part"); 
+        
+    } 
+
+    static void UserInput() 
+    { 
+        if (modus == "0") 
+        { 
+            begin: 
+
+            Console.Write( 
+                Environment.NewLine + "  Which kind of conversion do you want to execute?" + 
+                Environment.NewLine + " " + 
+
+                Environment.NewLine + "JT Conversation:" + 
+                Environment.NewLine + "  [1]  - Mimic-Conversion (One JT-Files per part and subassembly + Header-JT)" + 
+                Environment.NewLine + "  [2]  - GAPL-Mono-Conversion (One JT-file for first subassembly + Header-JT)" + 
+                Environment.NewLine + "  [3]  - Mono-Conversion (One JT-file for whole assembly)" + 
+                Environment.NewLine + "  [4]  - Header-JT (JT-File just containing assembly structure, no geometry)" + 
+                Environment.NewLine + "  [5]  - Mono-Conversion (Visible Only)" + 
+                Environment.NewLine + "  [6]  - Mimic-Conversion (Visible Only)" + 
+                Environment.NewLine + " " + 
+
+                Environment.NewLine + "CAD Mass Update:" + 
+                Environment.NewLine + "  [20]  - Structure-Update" + 
+                Environment.NewLine + "  [21]  - Export Attributes (prt to txt)" + 
+                Environment.NewLine + "  [22]  - Import Attributes (txt to prt)" + 
+                Environment.NewLine + " " + 
+
+                Environment.NewLine + "Program Settings:" + 
+                Environment.NewLine + "  [97] - Turn on debug mode" + 
+                Environment.NewLine + "  [98] - Set parallel process count" + 
+                Environment.NewLine + " " + 
+                Environment.NewLine + "  [h]  - Help" + 
+                Environment.NewLine + "  [q]  - Quit" + 
+                Environment.NewLine + ">  "); 
+
+
+            modus = Console.ReadLine(); 
+
+            //Check String 
+            if (modus != "1" && modus != "2" && modus != "3" && modus != "4" && modus != "5" && modus != "6" && modus != "10" && modus != "11" && modus != "20" && modus != "21" && modus != "22" && modus != "97" && modus != "98" && modus != "h" && modus != "q") 
+            { 
+                Console.Clear(); 
+                Log("warn", "Please enter a number"); 
+                goto begin; 
+            } 
+
+            //Check Filetype 
+            if ((modus == "1" || modus == "2" || modus == "3" || modus == "4" || modus == "5" || modus == "6") && ! filename.EndsWith(".prt") && ! filename.EndsWith(".zip")) 
+            { 
+                Console.Clear(); 
+                Log("warn", "Please use a prt/zip/7z file"); 
+                goto begin; 
+            } 
+            else if ((modus == "20" || modus == "21") && !filename.EndsWith(".prt")) 
+            { 
+                Console.Clear(); 
+                Log("warn", "Please use a prt file"); 
+                goto begin; 
+            } 
+            else if (modus == "22" && !filename.EndsWith(".txt")) 
+            { 
+                Console.Clear(); 
+                Log("warn", "Please use a txt file"); 
+                goto begin; 
+            } 
+
+            //Suboptions 
+            if (brep==0 && (modus=="1" || modus=="2" || modus=="3")) 
+            { 
+                Console.Write( 
+                    Environment.NewLine + "  Please select your setting:" + 
+                    Environment.NewLine + 
+                    Environment.NewLine + "  [1] - Including Brep" + 
+                    Environment.NewLine + "  [2] - Excluding Brep" + 
+                    Environment.NewLine + ">  "); 
+                brep = Convert.ToInt32(Console.ReadLine()); 
+            } 
+
+            else if (modus == "97") 
+            { 
+                debug = 1; 
+                Console.Clear(); 
+                goto begin; 
+            } 
+
+            else if (modus=="98") 
+            { 
+                Console.Write( 
+                    Environment.NewLine + "  Currently: "+cpucores.ToString() + " parallel processes are set, Overwrite:" + 
+                    Environment.NewLine + ">  "); 
+                cpucores = Convert.ToInt32(Console.ReadLine()); 
+                Console.Clear(); 
+                goto begin; 
+            } 
+
+            else if (modus=="h") 
+            { 
+                Process.Start(Path.Combine(exepath, "Universal Converter Documentation.pdf")); 
+                Console.Clear(); 
+                goto begin; 
+            } 
+
+            else if (modus=="q") 
+            { 
+                Environment.Exit(0); 
+            } 
+        } 
+        Console.WriteLine();         
+    } 
+
+    static void SetEnv() 
+    { 
+        cpucores = Environment.ProcessorCount / 2; 
+        exepath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location); 
+        filepath = Path.GetDirectoryName(filename); 
+
+        Environment.SetEnvironmentVariable("UGII_UPDATE_FAIL_OPTION", "UG_MODL_UPDATE_SUPPRESS"); 
+
+        //Environment.SetEnvironmentVariable("UGS_LICENSE_SERVER", "28000@C71L30SR0701.rhdwm.de,28000@C71L17SR0705.rhdwm.de,28000@C37L13SR0705.rhdwm.de"); 
+        //Environment.SetEnvironmentVariable("UGS_LICENSE_BUNDLE", "DESIGNER"); 
+
+        //RLS 
+        if (Environment.GetEnvironmentVariable("UGII_BASE_DIR") == "") 
+        { 
+            if (Directory.Exists(@"C:\rh\cad\nx1953")) 
+            { 
+                Environment.SetEnvironmentVariable("UGII_BASE_DIR", @"C:\rh\cad\nx1953"); 
+            } 
+            else if (Directory.Exists(@"D:\ugs\nx120")) 
+            { 
+                Environment.SetEnvironmentVariable("UGII_BASE_DIR", @"D:\ugs\nx120"); 
+            } 
+            else 
+                Log("error", "No NX Installation was found, please specify UGII_BASE_DIR"); 
+        } 
+
+    } 
+
+    static void RunNX(string _filename, string _modus, int _cpucores) 
+    { 
+        //ProcessStartInfo psi = new ProcessStartInfo(ugiibasedir + @"\NXBIN\run_journal.exe"); 
+        ProcessStartInfo psi = new ProcessStartInfo(Environment.GetEnvironmentVariable(@"UGII_BASE_DIR") + @"\NXBIN\run_journal.exe"); 
+
+        string args = "\"" + exepath + "\\NX.cs\" -args " + 
+            "\""+_filename + "\" " + 
+            _modus.ToString() + " " + 
+            _cpucores; 
+
+        psi.Arguments = args; 
+        psi.WindowStyle = ProcessWindowStyle.Hidden; 
+
+        Log("info", "Running NX Session"); 
+        Process proc = Process.Start(psi); 
+
+        proc.WaitForExit(); 
+        Console.WriteLine(); 
+    } 
+
+    static void SetConverterArgs() 
+    { 
+        //Mimic JT 
+        if (modus == "1") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_fully.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            if (brep == 1) 
+                tessug = "\"" + exepath + "\\config\\prtjt_mimic_brep.config\" "; 
+            else if (brep == 2) 
+                tessug = "\"" + exepath + "\\config\\prtjt_mimic_nobrep.config\" "; 
+        } 
+
+        //Mono JT 
+        else if (modus == "2" || modus == "3") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_fully.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            if (brep == 1) 
+                tessug = "\"" + exepath + "\\config\\prtjt_monolithic_brep.config\" "; 
+            else if (brep == 2) 
+                tessug = "\"" + exepath + "\\config\\prtjt_monolithic_nobrep.config\" "; 
+        } 
+
+        //Header-JT 
+        else if (modus =="4") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_assaved.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            if 
+        } 
+
+        //Mono JT visible only 
+        else if (modus == "5") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_assaved.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            tessug = "\"" + exepath + "\\config\\prtjt_monolithic_nobrep_EMM_Check\" "; 
+        } 
+
+        //Mimic JT visible only 
+        else if (modus == "6") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_assaved.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            tessug = "\"" + exepath + "\\config\\prtjt_mimic_nobrep_EMM_Check\" "; 
+
+        } 
+
+
+        //JT to STP 
+        else if (modus == "10") 
+        { 
+            string loadoptions = Path.Combine(exepath, @"config\load_options_fully.def"); 
+            Environment.SetEnvironmentVariable("UGII_LOAD_OPTIONS", loadoptions); 
+
+            tessug = "\"" + exepath + "\\config\\steptojt.config\" "; 
+        } 
+
+    } 
+
+    static void PVTransSingle(string file, string options) 
+    { 
+        ProcessStartInfo psi = new ProcessStartInfo(Environment.GetEnvironmentVariable(@"UGII_BASE_DIR") + @"\PVTRANS\ugtopv.exe"); 
+        string args = file + " -config=" + tessug + options + " -force_output_dir=" + filepath; 
+        psi.Arguments = args; 
+        psi.WindowStyle = ProcessWindowStyle.Hidden; 
+        Log("info", "Generating single JT for file: " + file); 
+        Log("debug", Environment.GetEnvironmentVariable(@"UGII_BASE_DIR") + @"\PVTRANS\ugtopv.exe " + args); 
+        Process proc = Process.Start(psi); 
+        proc.WaitForExit(); 
+        Console.WriteLine(); 
+
+        if (proc.ExitCode != 0 || !File.Exists(file.Replace(".prt", ".jt"))) 
+        { 
+            Log("warning", "Cant convert file: " + file); 
+        } 
+
+        if (file.EndsWith(".txt") && debug == 0 && proc.ExitCode == 0) 
+            File.Delete(file); 
+    } 
+
+    static void PVTransMulti(string filewildcard, string options) 
+    { 
+        string file = Path.GetFileName(filewildcard); 
+        string[] files = Directory.GetFiles(filepath, file); 
+        Parallel.ForEach(files, (liste) => 
+        { 
+            ProcessStartInfo psi = new ProcessStartInfo(Environment.GetEnvironmentVariable(@"UGII_BASE_DIR") + @"\PVTRANS\ugtopv.exe"); 
+            string args = liste + " -config=" + tessug + options + " -force_output_dir=" + filepath; 
+            psi.Arguments = args; 
+            psi.WindowStyle = ProcessWindowStyle.Hidden; 
+            Log("info", "Generating multiple JTs for files in: " + liste); 
+            Log("debug", Environment.GetEnvironmentVariable(@"UGII_BASE_DIR") + @"\PVTRANS\ugtopv.exe " + args); 
+            Process proc = Process.Start(psi);proc.WaitForExit(); 
+
+            StreamReader sr = new StreamReader(liste, false); 
+            string line; 
+            while ((line = sr.ReadLine()) != null) 
+            { 
+                if (!File.Exists(line.Replace(".prt", ".jt"))) 
+                { 
+                    Console.WriteLine(); 
+                    Log("warn", "Redo file: " + line); 
+                    Redo(line); 
+
+                } 
+            } 
+            sr.Close(); 
+
+
+            if (debug == 0) 
+                File.Delete(liste); 
+
+        }); 
+
+        Console.WriteLine(); 
+    } 
+
+    static void JtStep(string file) 
+    { 
+        ProcessStartInfo psi = new ProcessStartInfo(exepath + @"\jt_step\jt_step.exe"); 
+        //ProcessStartInfo psi = new ProcessStartInfo(@"C:\rh\VIS\TCVIS123\JT_STEP\Program\jt_step.exe"); 
+        string args = file + " -z " + tessug + " -o " + filepath; 
+        psi.Arguments = args; 
+        psi.WindowStyle = ProcessWindowStyle.Hidden; 
+        Log("info", "Generating JT for file: " + file); 
+        Log("debug", exepath + @"\jt_step\jt_step.exe " + args); 
+        Process proc = Process.Start(psi); 
+        proc.WaitForExit(); 
+        Console.WriteLine(); 
+
+        if (proc.ExitCode != 0 || !File.Exists(file.Replace(".stp", ".jt"))) 
+        { 
+            Log("warning", "Cant convert file: " + file); 
+        } 
+
+        if (proc.ExitCode == 0 && File.Exists(file.Replace(".stp", ".jt")) && debug == 0) 
+        { 
+            File.Delete(file.Replace(".stp", ".log")); 
+        } 
+    } 
+
+    static string Extract(string file) 
+    { 
+        ProcessStartInfo psi = new ProcessStartInfo(Path.Combine(exepath, "7za.exe")); 
+        string args = "e " + file + " -o" + Path.GetDirectoryName(file); 
+        psi.Arguments = args; 
+        psi.WindowStyle = ProcessWindowStyle.Hidden; 
+        Log("info", "Extracting file: " + file); 
+        Process proc = Process.Start(psi); 
+        proc.WaitForExit(); 
+        Console.WriteLine(); 
+
+        File.Move(file, Path.Combine(Path.GetDirectoryName(file), Path.GetFileNameWithoutExtension(file) + "_src" + Path.GetExtension(file))); 
+        
+        string newrootfile = Path.Combine(Path.GetDirectoryName(file), Path.GetFileNameWithoutExtension(file) + ".prt"); 
+        Log("debug", "New root file: " + newrootfile); 
+
+        if (! File.Exists(newrootfile)) 
+        { 
+            Log("error", "Root Assembly can't be extracted from Zip-file"); 
+        } 
+        
+        return newrootfile; 
+    } 
+
+    static void Zip(string file, string extension) 
+    { 
+        ProcessStartInfo psi = new ProcessStartInfo(Path.Combine(exepath, "7za.exe")); 
+        string zipfile = Path.Combine(Path.GetDirectoryName(file), Path.GetFileNameWithoutExtension(file) + ".zip"); 
+        string args = "a " + zipfile + " " + Path.Combine(Path.GetDirectoryName(file), extension); 
+        psi.Arguments = args; 
+        psi.WindowStyle = ProcessWindowStyle.Hidden; 
+        Log("info", "Compressing file: " + file); 
+        Process proc = Process.Start(psi); 
+        proc.WaitForExit(); 
+        Console.WriteLine(); 
+    } 
+    
+    static void Log(string level, string message) 
+    { 
+        if (level=="info") 
+        { 
+            Console.ForegroundColor = ConsoleColor.Green; 
+            Console.WriteLine("[INFO] " + message); 
+        } 
+        else if (level == "debug" && debug == 1) 
+        { 
+            Console.ForegroundColor = ConsoleColor.Magenta; 
+            Console.WriteLine("[DEBUG] " + message); 
+        } 
+        else if (level == "warn") 
+        { 
+            Console.ForegroundColor = ConsoleColor.Yellow; 
+            Console.WriteLine("[WARN] " + message); 
+        } 
+        else if (level == "error") 
+        { 
+            Console.ForegroundColor = ConsoleColor.Red; 
+            Console.WriteLine("[ERROR] " + message); 
+            Console.Read(); 
+            Environment.Exit(1); 
+        } 
+
+        Console.ResetColor(); 
+    } 
+    
+} 
+
